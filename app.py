@@ -1,26 +1,24 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-import anthropic
+import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
-
-# Anthropic client
-claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-# In-memory conversation history per WhatsApp number
-conversations = {}
-
-SYSTEM_PROMPT = (
-    "You are a helpful assistant responding to WhatsApp messages. "
-    "Keep responses concise and readable on a phone screen. "
-    "You can help with any task: answering questions, writing, research, calculations, and more."
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=(
+        "You are a helpful assistant responding to WhatsApp messages. "
+        "Keep responses concise and readable on a phone screen."
+    )
 )
 
-MAX_HISTORY = 20  # messages to keep per user
+app = Flask(__name__)
+
+# Chat sessions per WhatsApp number
+sessions = {}
 
 
 @app.route("/webhook", methods=["POST"])
@@ -31,31 +29,18 @@ def webhook():
     if not body:
         return _reply("(empty message received)")
 
-    # Reset conversation on command
     if body.lower() in ("/reset", "reset", "/clear", "clear"):
-        conversations.pop(from_number, None)
+        sessions.pop(from_number, None)
         return _reply("Conversation cleared. Starting fresh!")
 
-    # Build history
-    history = conversations.setdefault(from_number, [])
-    history.append({"role": "user", "content": body})
+    if from_number not in sessions:
+        sessions[from_number] = model.start_chat(history=[])
 
     try:
-        response = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=history,
-        )
-        reply_text = response.content[0].text
+        response = sessions[from_number].send_message(body)
+        reply_text = response.text
     except Exception as e:
         reply_text = f"Error: {e}"
-
-    history.append({"role": "assistant", "content": reply_text})
-
-    # Trim history to avoid token bloat
-    if len(history) > MAX_HISTORY:
-        conversations[from_number] = history[-MAX_HISTORY:]
 
     return _reply(reply_text)
 
